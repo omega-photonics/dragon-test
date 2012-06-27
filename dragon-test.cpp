@@ -21,7 +21,7 @@
 #define FramesPerBuffer 3
 #define PacketCount (FrameLength*FramesPerBuffer/90)
 
-#define USE_BUFFERS 4
+#define USE_BUFFERS 3
 
 //main function, here main PCIE thread runs
 int main(int argc, char** argv)
