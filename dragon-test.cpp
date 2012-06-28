@@ -48,13 +48,14 @@ int main(int argc, char** argv)
     ioctl(DragonDevHandle, DRAGON_SET_FRAME_PER_BUFFER_COUNT, FramesPerBuffer);
     ioctl(DragonDevHandle, DRAGON_START, 0);
     ioctl(DragonDevHandle, DRAGON_START, 1);
+    ioctl(DragonDevHandle, DRAGON_QUEUE_BUFFER, 0);
+
+    usleep(1000000);
 
     while(true)
     {
-//        ioctl(DragonDevHandle, DRAGON_START, 0);
         for(k=0; k<USE_BUFFERS; k++)
             ioctl(DragonDevHandle, DRAGON_QUEUE_BUFFER, k);
-//        ioctl(DragonDevHandle, DRAGON_START, 1);
 
         usleep(1000000);
 
