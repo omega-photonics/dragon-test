@@ -15,17 +15,11 @@
 
 #include "../dragon-module/dragon.h"
 
-#define DRAGON_DEV_FILENAME "/dev/dragon"
+#define DRAGON_DEV_FILENAME "/dev/dragon0"
 
-#define START_PULSE_WIDTH 5 // (127 max)
+#define DRAGON_BUFFER_COUNT 5
 
-#define DRAGON_DEFAULT_FRAME_LENGTH 8192	// (8192 max) - real frame point count per channel is 6x larger, but device just counts by 6 points
-#define DRAGON_DEFAULT_FRAME_COUNT 10000
-#define DRAGON_DEFAULT_DAC_DATA 0xFFFFFFFF  //each byte for one of four 8-bit DACs
-
-uint16_t FrameLength = DRAGON_DEFAULT_FRAME_LENGTH; //how many points in one input (and ouput) frame we have
-uint32_t FrameCount =  DRAGON_DEFAULT_FRAME_COUNT; //how many frames we want to sum to get output data
-uint32_t PcieDacData = DRAGON_DEFAULT_DAC_DATA; //DAC data to be set on PCIE device
+#define LOOPS_COUNT 500
 
 // get system time in milliseconds
 unsigned long GetTickCount()
@@ -41,59 +35,99 @@ unsigned long GetTickCount()
 int main(int argc, char** argv)
 {
     int DragonDevHandle; //handle for opening PCIE device file
-    unsigned char* PcieInputDataShadows[DRAGON_BUFFER_COUNT]; //here we map kernel memory area which PCIE device fills with data via DMA
-    unsigned int i, j, k;
-    uint32_t CONFIG_REG_1 = (1<<21) | ((START_PULSE_WIDTH<<13) & 127) | ((FrameLength-1) & 8191);
+    unsigned int i;
+    dragon_buffer buf;
+    size_t buf_count = DRAGON_BUFFER_COUNT;
+    unsigned char* user_bufs[DRAGON_BUFFER_COUNT];
+    unsigned long dtStart, dtEnd;
 
     //open PCIE device
     DragonDevHandle = open(DRAGON_DEV_FILENAME, O_RDWR);
+
     if(DragonDevHandle<0)
     {
         puts("Failed to open PCIE device!\n");
         return -1;
     }
 
-    for(i=0; i<DRAGON_BUFFER_COUNT; i++)
+    ioctl(DragonDevHandle, DRAGON_SET_ACTIVITY, 0);
+
+    if (!ioctl(DragonDevHandle, DRAGON_REQUEST_BUFFERS, &buf_count) )
     {
-        ioctl(DragonDevHandle, DRAGON_REQUEST_BUFFER_NUMBER, i);
-        PcieInputDataShadows[i] = (unsigned char*)mmap(0, DRAGON_BUFFER_SIZE, PROT_READ, MAP_SHARED, DragonDevHandle, 0);
-        ioctl(DragonDevHandle, DRAGON_QUEUE_BUFFER, i);
+        printf("buf_count = %ld\n", buf_count);
+    }
+    else
+    {
+        printf("DRAGON_REQUEST_BUFFERS error\n");
+        return -1;
     }
 
-    ioctl(DragonDevHandle, DRAGON_SET_DAC, PcieDacData);
 
-    ioctl(DragonDevHandle, DRAGON_SET_REG1, CONFIG_REG_1);
-    ioctl(DragonDevHandle, DRAGON_SET_REG2, 1);
-    ioctl(DragonDevHandle, DRAGON_START, 1);
-
-
-    while(true)
+    for (i = 0; i < buf_count; ++i)
     {
-        for(k=0; k<DRAGON_BUFFER_COUNT; k++)
-            ioctl(DragonDevHandle, DRAGON_QUEUE_BUFFER, k);
+        buf.idx = i;
 
-        usleep(1000000);
-
-        for(k=0; k<DRAGON_BUFFER_COUNT; k++)
+        if (ioctl(DragonDevHandle, DRAGON_QUERY_BUFFER, &buf) )
         {
-            printf("\n\nbuffer: %d", k);
-            i=0;
-            printf("\nfirst pckt: %d,\tsextets: ",
-                   ((0x0F&PcieInputDataShadows[k][i])<<24) | (PcieInputDataShadows[k][i+1]<<16) |
-                   (PcieInputDataShadows[k][i+2]<<8) | PcieInputDataShadows[k][i+3]);
+            printf("DRAGON_QUERY_BUFFER %d error\n", i);
+            return -1;
+        }
 
-            for(j=0; j<15; j++)
-                printf("%d\t", ((PcieInputDataShadows[k][i+4+j*8]&31)<<8) | PcieInputDataShadows[k][i+5+j*8]);
+        user_bufs[i] = (unsigned char*)mmap(NULL, buf.len,
+                                            PROT_READ | PROT_WRITE,
+                                            MAP_SHARED, DragonDevHandle,
+                                            buf.offset);
 
-            i=DRAGON_BUFFER_SIZE-DRAGON_PACKET_SIZE_BYTES;
-            printf("\nlast  pckt: %d \t sextets: ",
-                   ((0x0F&PcieInputDataShadows[k][i])<<24) | (PcieInputDataShadows[k][i+1]<<16) |
-                   (PcieInputDataShadows[k][i+2]<<8) | PcieInputDataShadows[k][i+3]);
+        if (!user_bufs[i])
+        {
+            printf("mmap buffer %d error\n", i);
+            return -1;
+        }
 
-            for(j=0; j<15; j++)
-                printf("%d\t", ((PcieInputDataShadows[k][i+4+j*8]&31)<<8) | PcieInputDataShadows[k][i+5+j*8]);
+
+        if (ioctl(DragonDevHandle, DRAGON_QBUF, &buf) )
+        {
+            printf("DRAGON_QBUF error\n");
+            return -1;
         }
     }
+
+    ioctl(DragonDevHandle, DRAGON_SET_ACTIVITY, 1);
+
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(DragonDevHandle, &fds);
+
+    dtStart = GetTickCount();
+    for (i = 0; i < LOOPS_COUNT; ++i)
+    {
+        select(DragonDevHandle + 1, &fds, NULL, NULL, NULL);
+
+        //Dequeue buffer
+
+        if (ioctl(DragonDevHandle, DRAGON_DQBUF, &buf) )
+        {
+            printf("DRAGON_DQBUF error\n");
+            continue;
+        }
+
+        //Do something with data
+        memset(user_bufs[buf.idx], 0, buf.len);
+
+        //Queue buffer
+        if (ioctl(DragonDevHandle, DRAGON_QBUF, &buf) )
+        {
+            printf("DRAGON_QBUF error\n");
+            return -1;
+        }
+    }
+    dtEnd = GetTickCount();
+
+    double  FPS = 1000*LOOPS_COUNT / (double)(dtEnd - dtStart);
+
+    printf("FPS = %lf\n", FPS);
+
+    close(DragonDevHandle);
 
     return 0;
 }
