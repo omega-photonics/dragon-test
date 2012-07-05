@@ -19,7 +19,7 @@
 
 #define DRAGON_BUFFER_COUNT 5
 
-#define LOOPS_COUNT 500
+#define LOOPS_COUNT 100
 
 // get system time in milliseconds
 unsigned long GetTickCount()
@@ -99,7 +99,8 @@ int main(int argc, char** argv)
     FD_SET(DragonDevHandle, &fds);
 
     dtStart = GetTickCount();
-    for (i = 0; i < LOOPS_COUNT; ++i)
+    int count = 0;
+    for (;;)
     {
         select(DragonDevHandle + 1, &fds, NULL, NULL, NULL);
 
@@ -120,12 +121,20 @@ int main(int argc, char** argv)
             printf("DRAGON_QBUF error\n");
             return -1;
         }
+
+        ++count;
+        if (count % LOOPS_COUNT == 0)
+        {
+            dtEnd = GetTickCount();
+            double  FPS = 1000*LOOPS_COUNT / (double)(dtEnd - dtStart);
+            count = 0;
+            dtStart = dtEnd;
+            printf("FPS = %lf\n", FPS);
+        }
     }
-    dtEnd = GetTickCount();
 
-    double  FPS = 1000*LOOPS_COUNT / (double)(dtEnd - dtStart);
 
-    printf("FPS = %lf\n", FPS);
+
 
     close(DragonDevHandle);
 
